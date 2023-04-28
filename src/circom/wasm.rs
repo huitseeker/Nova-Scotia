@@ -21,11 +21,8 @@ pub async fn read_file(path: &str) -> Uint8Array {
     let promise = js_sys::Promise::from(promise_as_js_value);
     let future = JsFuture::from(promise);
     let result: Result<JsValue, JsValue> = future.await;
-    if let Ok(content) = result {
-        return Uint8Array::new(&content);
-    } else {
-        return Uint8Array::new(&JsValue::NULL);
-    }
+    let Ok(content) = result else { return Uint8Array::new(&JsValue::NULL); };
+    return Uint8Array::new(&content);
 }
 
 #[wasm_bindgen]
@@ -34,11 +31,8 @@ pub async fn generate_witness_browser(input_json_string: &str, wasm_file: &str) 
     let promise = js_sys::Promise::from(promise_as_js_value);
     let future = JsFuture::from(promise);
     let result: Result<JsValue, JsValue> = future.await;
-    if let Ok(content) = result {
-        return Uint8Array::new(&content);
-    } else {
-        return Uint8Array::new(&JsValue::NULL);
-    }
+    let Ok(content) = result else { return Uint8Array::new(&JsValue::NULL); };
+    return Uint8Array::new(&content);
 }
 
 #[cfg(target_family = "wasm")]
