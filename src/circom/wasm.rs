@@ -1,4 +1,4 @@
-use crate::{FileLocation, G1, R1CS};
+use crate::{FileLocation, G1, G1bn, R1CS};
 
 use crate::circom::reader::{load_r1cs_from_bin, load_witness_from_bin_reader};
 use ff::PrimeField;
@@ -51,6 +51,18 @@ pub async fn load_r1cs(filename: &FileLocation) -> R1CS<<G1 as Group>::Scalar> {
     let r1cs_ser = read_file(filename).await.to_vec();
     let r1cs_cursor = Cursor::new(r1cs_ser);
     load_r1cs_from_bin(r1cs_cursor)
+}
+
+#[cfg(target_family = "wasm")]
+/// load r1cs file by filename with autodetect encoding (bin or json) (for working with bn254 and grumpkin curves)
+pub async fn load_r1cs_bn(filename: &FileLocation) -> R1CS<<G1bn as Group>::Scalar> {
+    let filename = match filename {
+        FileLocation::PathBuf(_) => panic!("unreachable"),
+        FileLocation::URL(path) => path,
+    };
+    let r1cs_ser = read_file(filename).await.to_vec();
+    let r1cs_cursor = Cursor::new(r1cs_ser);
+    load_r1cs_from_bin_bn(r1cs_cursor)
 }
 
 #[cfg(target_family = "wasm")]

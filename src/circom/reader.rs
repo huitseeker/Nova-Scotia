@@ -11,12 +11,13 @@ use std::process::Command;
 use std::str;
 
 use crate::circom::circuit::{CircuitJson, R1CS};
-use crate::circom::file::{from_reader, read_field};
+use crate::circom::file::{from_reader, read_field, from_reader_bn};
 use crate::FileLocation;
 use ff::PrimeField;
 use pasta_curves::group::Group;
 
 type G1 = pasta_curves::pallas::Point;
+type G1bn = nova_snark::provider::bn256_grumpkin::bn256::Point;
 
 pub fn generate_witness_from_bin<Fr: PrimeField>(
     witness_bin: &Path,
@@ -184,6 +185,20 @@ pub fn load_r1cs(filename: &FileLocation) -> R1CS<<G1 as Group>::Scalar> {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
+/// load r1cs file by filename with autodetect encoding (bin or json) (for working with bn254 and grumpkin curves)
+pub fn load_r1cs_bn(filename: &FileLocation) -> R1CS<<G1bn as Group>::Scalar> {
+    let filename = match filename {
+        FileLocation::PathBuf(filename) => filename,
+        FileLocation::URL(_) => panic!("unreachable"),
+    };
+    if filename.ends_with("json") {
+        load_r1cs_from_json_file(filename)
+    } else {
+        load_r1cs_from_bin_file_bn(filename)
+    }
+}
+
 #[cfg(target_family = "wasm")]
 pub use crate::circom::wasm::load_r1cs;
 
@@ -238,6 +253,15 @@ fn load_r1cs_from_bin_file(filename: &Path) -> R1CS<<G1 as Group>::Scalar> {
     load_r1cs_from_bin(BufReader::new(reader))
 }
 
+/// load r1cs from bin file by filename (for working with bn254 and grumpkin curves)
+fn load_r1cs_from_bin_file_bn(filename: &Path) -> R1CS<<G1bn as Group>::Scalar> {
+    let reader = OpenOptions::new()
+        .read(true)
+        .open(filename)
+        .expect("unable to open.");
+    load_r1cs_from_bin_bn(BufReader::new(reader))
+}
+
 /// load r1cs from bin by a reader
 pub(crate) fn load_r1cs_from_bin<R: Read + Seek>(reader: R) -> R1CS<<G1 as Group>::Scalar> {
     let file = from_reader(reader).expect("unable to read.");
@@ -251,3 +275,18 @@ pub(crate) fn load_r1cs_from_bin<R: Read + Seek>(reader: R) -> R1CS<<G1 as Group
         constraints: file.constraints,
     }
 }
+
+/// load r1cs from bin by a reader (for working with bn254 and grumpkin curves)
+pub(crate) fn load_r1cs_from_bin_bn<R: Read + Seek>(reader: R) -> R1CS<<G1bn as Group>::Scalar> {
+    let file = from_reader_bn(reader).expect("unable to read.");
+    let num_inputs = (1 + file.header.n_pub_in + file.header.n_pub_out) as usize;
+    let num_variables = file.header.n_wires as usize;
+    let num_aux = num_variables - num_inputs;
+    R1CS {
+        num_aux,
+        num_inputs,
+        num_variables,
+        constraints: file.constraints,
+    }
+}
+

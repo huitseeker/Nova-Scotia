@@ -13,6 +13,9 @@ use std::{
 type G1 = pasta_curves::pallas::Point;
 type G2 = pasta_curves::vesta::Point;
 
+type G1bn = nova_snark::provider::bn256_grumpkin::bn256::Point;
+type G2bn = nova_snark::provider::bn256_grumpkin::grumpkin::Point;
+
 // R1CSFile's header
 #[derive(Debug, Default)]
 pub struct Header {
@@ -190,6 +193,78 @@ pub fn from_reader<R: Read + Seek>(mut reader: R) -> Result<R1CSFile<<G1 as Grou
         wire_mapping,
     })
 }
+
+pub fn from_reader_bn<R: Read + Seek>(mut reader: R) -> Result<R1CSFile<<G1bn as Group>::Scalar>> {
+    let mut magic = [0u8; 4];
+    reader.read_exact(&mut magic)?;
+    if magic != [0x72, 0x31, 0x63, 0x73] {
+        // magic = "r1cs"
+        return Err(Error::new(ErrorKind::InvalidData, "Invalid magic number"));
+    }
+
+    let version = reader.read_u32::<LittleEndian>()?;
+    if version != 1 {
+        return Err(Error::new(ErrorKind::InvalidData, "Unsupported version"));
+    }
+
+    let num_sections = reader.read_u32::<LittleEndian>()?;
+
+    // section type -> file offset
+    let mut section_offsets = HashMap::<u32, u64>::new();
+    let mut section_sizes = HashMap::<u32, u64>::new();
+
+    // get file offset of each section
+    for _ in 0..num_sections {
+        let section_type = reader.read_u32::<LittleEndian>()?;
+        let section_size = reader.read_u64::<LittleEndian>()?;
+        let offset = reader.seek(SeekFrom::Current(0))?;
+        section_offsets.insert(section_type, offset);
+        section_sizes.insert(section_type, section_size);
+        reader.seek(SeekFrom::Current(section_size as i64))?;
+    }
+
+    let header_type = 1;
+    let constraint_type = 2;
+    let wire2label_type = 3;
+
+    reader.seek(SeekFrom::Start(*section_offsets.get(&header_type).unwrap()))?;
+    let header = read_header(&mut reader, *section_sizes.get(&header_type).unwrap())?;
+    if header.field_size != 32 {
+        return Err(Error::new(
+            ErrorKind::InvalidData,
+            "This parser only supports 32-byte fields",
+        ));
+    }
+    // if header.prime_size != hex!("010000f093f5e1439170b97948e833285d588181b64550b829a031e1724e6430") {
+    //     return Err(Error::new(ErrorKind::InvalidData, "This parser only supports bn256"));
+    // }
+
+    reader.seek(SeekFrom::Start(
+        *section_offsets.get(&constraint_type).unwrap(),
+    ))?;
+    let constraints = read_constraints::<&mut R, <G1bn as Group>::Scalar>(
+        &mut reader,
+        *section_sizes.get(&constraint_type).unwrap(),
+        &header,
+    )?;
+
+    reader.seek(SeekFrom::Start(
+        *section_offsets.get(&wire2label_type).unwrap(),
+    ))?;
+    let wire_mapping = read_map(
+        &mut reader,
+        *section_sizes.get(&wire2label_type).unwrap(),
+        &header,
+    )?;
+
+    Ok(R1CSFile {
+        version,
+        header,
+        constraints,
+        wire_mapping,
+    })
+}
+
 
 mod tests {
     #[test]

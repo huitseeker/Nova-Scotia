@@ -34,12 +34,36 @@ pub type S2 = nova_snark::spartan::RelaxedR1CSSNARK<G2, EE2>;
 pub type C1 = CircomCircuit<F1>;
 pub type C2 = TrivialTestCircuit<F2>;
 
+
+pub type G1bn = nova_snark::provider::bn256_grumpkin::bn256::Point;
+pub type F1bn = <G1bn as Group>::Scalar;
+pub type EE1bn = nova_snark::provider::ipa_pc::EvaluationEngine<G1bn>;
+pub type S1bn = nova_snark::spartan::RelaxedR1CSSNARK<G1bn, EE1bn>;
+pub type G2bn = nova_snark::provider::bn256_grumpkin::grumpkin::Point;
+pub type F2bn = <G2bn as Group>::Scalar;
+pub type EE2bn = nova_snark::provider::ipa_pc::EvaluationEngine<G2bn>;
+pub type S2bn = nova_snark::spartan::RelaxedR1CSSNARK<G2bn, EE2bn>;
+
+pub type C1bn = CircomCircuit<F1bn>;
+pub type C2bn = TrivialTestCircuit<F2bn>;
+
 pub enum FileLocation {
     PathBuf(PathBuf),
     URL(String),
 }
 
 pub fn create_public_params(r1cs: R1CS<F1>) -> PublicParams<G1, G2, C1, C2> {
+    let circuit_primary = CircomCircuit {
+        r1cs,
+        witness: None,
+    };
+    let circuit_secondary = TrivialTestCircuit::default();
+
+    PublicParams::setup(circuit_primary.clone(), circuit_secondary.clone())
+}
+
+/// (for working with bn254 and grumpkin curves)
+pub fn create_public_params_bn(r1cs: R1CS<F1bn>) -> PublicParams<G1bn, G2bn, C1bn, C2bn> {
     let circuit_primary = CircomCircuit {
         r1cs,
         witness: None,
@@ -150,6 +174,195 @@ pub fn create_recursive_circuit(
     fs::remove_file(witness_generator_output)?;
 
     let recursive_snark = recursive_snark.unwrap();
+    Ok(recursive_snark)
+}
+
+#[cfg(not(target_family = "wasm"))]
+/// (for working with bn254 and grumpkin curves)
+pub fn create_recursive_circuit_bn(
+    witness_generator_file: FileLocation,
+    r1cs: R1CS<F1bn>,
+    private_inputs: Vec<HashMap<String, Value>>,
+    start_public_input: Vec<F1bn>,
+    pp: &PublicParams<G1bn, G2bn, C1bn, C2bn>,
+) -> Result<RecursiveSNARK<G1bn, G2bn, C1bn, C2bn>, std::io::Error> {
+    let root = current_dir().unwrap();
+    let witness_generator_output = root.join("circom_witness.wtns");
+
+    let iteration_count = private_inputs.len();
+
+    let start_public_input_hex = start_public_input
+        .iter()
+        .map(|&x| format!("{:?}", x).strip_prefix("0x").unwrap().to_string())
+        .collect::<Vec<String>>();
+    let mut current_public_input = start_public_input_hex.clone();
+
+    let circuit_secondary = TrivialTestCircuit::default();
+    let z0_secondary = vec![<G2bn as Group>::Scalar::zero()];
+
+    let mut recursive_snark: Option<RecursiveSNARK<G1bn, G2bn, C1bn, C2bn>> = None;
+
+    for i in 0..iteration_count {
+        let decimal_stringified_input: Vec<String> = current_public_input
+            .iter()
+            .map(|x| BigInt::from_str_radix(x, 16).unwrap().to_str_radix(10))
+            .collect();
+
+        let input = CircomInput {
+            step_in: decimal_stringified_input.clone(),
+            extra: private_inputs[i].clone(),
+        };
+
+        let input_json = serde_json::to_string(&input).unwrap();
+
+        let is_wasm = match &witness_generator_file {
+            FileLocation::PathBuf(path) => path.extension().unwrap_or_default() == "wasm",
+            FileLocation::URL(_) => true,
+        };
+
+        let witness = if is_wasm {
+            generate_witness_from_wasm::<<G1bn as Group>::Scalar>(
+                &witness_generator_file,
+                &input_json,
+                &witness_generator_output,
+            )
+        } else {
+            let witness_generator_file = match &witness_generator_file {
+                FileLocation::PathBuf(path) => path,
+                FileLocation::URL(_) => panic!("unreachable"),
+            };
+            generate_witness_from_bin::<<G1bn as Group>::Scalar>(
+                &witness_generator_file,
+                &input_json,
+                &witness_generator_output,
+            )
+        };
+        let circuit = CircomCircuit {
+            r1cs: r1cs.clone(),
+            witness: Some(witness),
+        };
+
+        let current_public_output = circuit.get_public_outputs();
+        current_public_input = current_public_output
+            .iter()
+            .map(|&x| format!("{:?}", x).strip_prefix("0x").unwrap().to_string())
+            .collect();
+
+        let mut r_snark = recursive_snark.unwrap_or_else(|| {
+            RecursiveSNARK::new(
+                pp,
+                &circuit,
+                &circuit_secondary,
+                start_public_input.clone(),
+                z0_secondary.clone(),
+            )
+        });
+        r_snark
+            .prove_step(
+                &pp,
+                &circuit,
+                &circuit_secondary,
+                start_public_input.clone(),
+                z0_secondary.clone(),
+            )
+            .expect("failure to prove Nova step");
+        recursive_snark = Some(r_snark);
+    }
+    fs::remove_file(witness_generator_output)?;
+
+    let recursive_snark = recursive_snark.unwrap();
+    Ok(recursive_snark)
+}
+
+
+#[cfg(target_family = "wasm")]
+pub async fn create_recursive_circuit_bn(
+    witness_generator_file: FileLocation,
+    r1cs: R1CS<F1bn>,
+    private_inputs: Vec<HashMap<String, Value>>,
+    start_public_input: Vec<F1bn>,
+    pp: &PublicParams<G1bn, G2bn, C1bn, C2bn>,
+) -> Result<RecursiveSNARK<G1bn, G2bn, C1bn, C2bn>, std::io::Error> {
+    let iteration_count = private_inputs.len();
+    let mut circuit_iterations = Vec::with_capacity(iteration_count);
+
+    let start_public_input_hex = start_public_input
+        .iter()
+        .map(|&x| format!("{:?}", x).strip_prefix("0x").unwrap().to_string())
+        .collect::<Vec<String>>();
+    let mut current_public_input = start_public_input_hex.clone();
+
+    for i in 0..iteration_count {
+        let decimal_stringified_input: Vec<String> = current_public_input
+            .iter()
+            .map(|x| BigInt::from_str_radix(x, 16).unwrap().to_str_radix(10))
+            .collect();
+
+        let input = CircomInput {
+            step_in: decimal_stringified_input.clone(),
+            extra: private_inputs[i].clone(),
+        };
+
+        let input_json = serde_json::to_string(&input).unwrap();
+
+        let is_wasm = match &witness_generator_file {
+            FileLocation::PathBuf(path) => path.extension().unwrap_or_default() == "wasm",
+            FileLocation::URL(_) => true,
+        };
+
+        let witness = if is_wasm {
+            generate_witness_from_wasm::<<G1bn as Group>::Scalar>(
+                &witness_generator_file,
+                &input_json,
+                Path::new(""),
+            )
+            .await
+        } else {
+            let witness_generator_file = match &witness_generator_file {
+                FileLocation::PathBuf(path) => path,
+                FileLocation::URL(_) => panic!("unreachable"),
+            };
+            generate_witness_from_bin::<<G1bn as Group>::Scalar>(
+                &witness_generator_file,
+                &input_json,
+                Path::new(""),
+            )
+        };
+        let circuit = CircomCircuit {
+            r1cs: r1cs.clone(),
+            witness: Some(witness),
+        };
+        let current_public_output = circuit.get_public_outputs();
+
+        circuit_iterations.push(circuit);
+        current_public_input = current_public_output
+            .iter()
+            .map(|&x| format!("{:?}", x).strip_prefix("0x").unwrap().to_string())
+            .collect();
+    }
+
+    let circuit_secondary = TrivialTestCircuit::default();
+    let z0_secondary = vec![<G2bn as Group>::Scalar::zero()];
+
+    let mut recursive_snark = RecursiveSNARK::new(
+        pp,
+        &circuit_iterations[0],
+        &circuit_secondary,
+        start_public_input.clone(),
+        z0_secondary.clone(),
+    );
+
+    for i in 0..iteration_count {
+        recursive_snark.prove_step(
+            &pp,
+            &circuit_iterations[i],
+            &circuit_secondary,
+            start_public_input.clone(),
+            z0_secondary.clone(),
+        )
+        .expect("failure to prove Nova step");
+    }
+
     Ok(recursive_snark)
 }
 
