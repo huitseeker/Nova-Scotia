@@ -1,6 +1,6 @@
 use crate::{FileLocation, G1, G1bn, R1CS};
 
-use crate::circom::reader::{load_r1cs_from_bin, load_witness_from_bin_reader};
+use crate::circom::reader::{load_r1cs_from_bin, load_r1cs_from_bin_bn, load_witness_from_bin_reader};
 use ff::PrimeField;
 use js_sys::Uint8Array;
 use nova_snark::traits::Group;
