@@ -202,6 +202,9 @@ pub fn load_r1cs_bn(filename: &FileLocation) -> R1CS<<G1bn as Group>::Scalar> {
 #[cfg(target_family = "wasm")]
 pub use crate::circom::wasm::load_r1cs;
 
+#[cfg(target_family = "wasm")]
+pub use crate::circom::wasm::load_r1cs_bn;
+
 /// load r1cs from json file by filename
 fn load_r1cs_from_json_file<Fr: PrimeField>(filename: &Path) -> R1CS<Fr> {
     let reader = OpenOptions::new()
